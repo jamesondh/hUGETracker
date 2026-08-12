@@ -41,7 +41,7 @@ jobs:
 
           wget https://netactuate.dl.sourceforge.net/project/lazarus/Lazarus%20Linux%20amd64%20DEB/Lazarus%203.0/lazarus-project_3.0.0-0_amd64.deb
           wget https://cytranet.dl.sourceforge.net/project/lazarus/Lazarus%20Linux%20amd64%20DEB/Lazarus%203.0/fpc-laz_3.2.2-210709_amd64.deb
-          wget https://versaweb.dl.sourceforge.net/project/lazarus/Lazarus%20Linux%20amd64%20DEB/Lazarus%203.0/fpc-src_3.2.2-210709_amd64.deb
+          wget https://downloads.sourceforge.net/project/lazarus/Lazarus%20Linux%20amd64%20DEB/Lazarus%203.0/fpc-src_3.2.2-210709_amd64.deb
 
           sudo apt install -yq ./fpc-laz_3.2.2-210709_amd64.deb ./fpc-src_3.2.2-210709_amd64.deb ./lazarus-project_3.0.0-0_amd64.deb
 
@@ -100,6 +100,7 @@ jobs:
             base-devel
             mingw-w64-x86_64-toolchain
             yasm
+            git
 
       - name: Build PortMidi (Windows)
         if: matrix.name == 'Windows'

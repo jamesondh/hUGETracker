@@ -37,11 +37,14 @@ if [ "$(uname -s | head -c 5)" = "MINGW" ] || [ "$(uname -s | head -c 5)" = "MSY
     CMAKE_EXTRA+=(-G "MSYS Makefiles")
 fi
 
+# The ${arr[@]+"${arr[@]}"} guard makes empty-array expansion safe under
+# `set -u` on bash 3.2 (macOS's /bin/bash), where a bare "${arr[@]}" on an
+# empty array trips the unbound-variable check.
 cmake -S . -B build \
       -DCMAKE_BUILD_TYPE=Release \
       -DBUILD_SHARED_LIBS=ON \
       -DCMAKE_INSTALL_PREFIX="${INSTALL_PREFIX}" \
-      "${CMAKE_EXTRA[@]}"
+      ${CMAKE_EXTRA[@]+"${CMAKE_EXTRA[@]}"}
 
 cmake --build build --config Release -j${JOBS}
 cmake --install build --config Release
