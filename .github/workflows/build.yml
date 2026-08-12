@@ -101,6 +101,7 @@ jobs:
             mingw-w64-x86_64-toolchain
             yasm
             git
+            mingw-w64-x86_64-cmake
 
       - name: Build PortMidi (Windows)
         if: matrix.name == 'Windows'
@@ -127,7 +128,15 @@ jobs:
           lazbuild --add-package-link src/rackctls/RackCtlsPkg.lpk
           lazbuild --add-package-link src/bgrabitmap/bgrabitmap/bgrabitmappack.lpk
 
-          lazbuild src/hUGETracker.lpi --build-mode="Production ${{ matrix.name }}"
+          # macos-14 runners are Apple Silicon and the SDL2 built above is arm64,
+          # but lazbuild under the Intel-cask Lazarus defaults to compiling
+          # x86_64 — mismatched arches break the linker. Target arm64 native.
+          EXTRA_LAZBUILD=()
+          if [ "${{ matrix.name }}" = "Mac" ]; then
+            EXTRA_LAZBUILD+=(--cpu=aarch64)
+          fi
+
+          lazbuild ${EXTRA_LAZBUILD[@]+"${EXTRA_LAZBUILD[@]}"} src/hUGETracker.lpi --build-mode="Production ${{ matrix.name }}"
           lazbuild src/uge2source/uge2source.lpi --build-mode=Release
 
       - name: Package build
