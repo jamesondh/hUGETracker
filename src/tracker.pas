@@ -53,6 +53,7 @@ type
     MenuItem42: TMenuItem;
     MenuItem55: TMenuItem;
     MenuItem56: TMenuItem;
+    RecentFilesMenuItem: TMenuItem;
     RevertMenuItem: TMenuItem;
     Splitter2: TSplitter;
     TBMOpenDialog: TOpenDialog;
@@ -502,6 +503,7 @@ type
     Playing: Boolean;
     LoadingFile: Boolean;
     SaveSucceeded: Boolean;
+    Dirty: Boolean;
 
     WaveInstrumentsNode,
     NoiseInstrumentsNode,
@@ -547,6 +549,12 @@ type
     procedure UpdateBPMLabel;
 
     function CheckUnsavedChanges: Boolean;
+    procedure MarkDirty;
+    procedure OnTrackerGridDirty(Sender: TObject);
+
+    procedure RebuildRecentFilesMenu;
+    procedure OpenRecentFileClick(Sender: TObject);
+    procedure ClearRecentFilesClick(Sender: TObject);
 
     procedure DrawWaveform(PB: TPaintBox; Wave: TWave; DrawGrid: Boolean);
     procedure DrawEnvelope(PB: TPaintBox);
@@ -667,6 +675,9 @@ begin
   ReloadPatterns;
 
   PageControl1.ActivePageIndex := 0;
+
+  // Anything a fresh load/new-song touched shouldn't count as dirty.
+  Dirty := False;
 end;
 
 procedure TfrmTracker.UpdateWindowTitle;
@@ -710,17 +721,106 @@ end;
 
 function TfrmTracker.CheckUnsavedChanges: Boolean;
 begin
-  Result := True;
+  if not Dirty then Exit(True);
 
   case MessageDlg('Save?', 'Do you want to save your work before closing this file?',
   mtWarning, [mbYes, mbNo, mbCancel], 0) of
     mrYes: begin
-      FileSaveAs1.Execute;
+      SaveSucceeded := False;
+      // Use FileSave1Execute so that when a filename is already known we
+      // silent-save instead of gratuitously popping up the Save As dialog.
+      FileSave1Execute(nil);
       Exit(SaveSucceeded)
     end;
     mrNo: Exit(True);
     mrCancel: Exit(False)
   end;
+
+  Result := True;
+end;
+
+procedure TfrmTracker.MarkDirty;
+begin
+  // Don't flip the flag during load/import — the code populates a bunch of
+  // UI controls whose OnChange handlers would otherwise mark a freshly loaded
+  // song as dirty.
+  if LoadingFile then Exit;
+  Dirty := True;
+end;
+
+procedure TfrmTracker.OnTrackerGridDirty(Sender: TObject);
+begin
+  MarkDirty;
+end;
+
+procedure TfrmTracker.RebuildRecentFilesMenu;
+var
+  I: Integer;
+  Item, Separator, ClearItem: TMenuItem;
+  DisplayPath: String;
+begin
+  if not Assigned(RecentFilesMenuItem) then Exit;
+
+  RecentFilesMenuItem.Clear;
+
+  if TrackerSettings.RecentFiles.Count = 0 then begin
+    Item := TMenuItem.Create(RecentFilesMenuItem);
+    Item.Caption := '(none)';
+    Item.Enabled := False;
+    RecentFilesMenuItem.Add(Item);
+    RecentFilesMenuItem.Enabled := False;
+    Exit;
+  end;
+
+  RecentFilesMenuItem.Enabled := True;
+
+  for I := 0 to TrackerSettings.RecentFiles.Count-1 do begin
+    Item := TMenuItem.Create(RecentFilesMenuItem);
+    DisplayPath := TrackerSettings.RecentFiles[I];
+    // "&1 filename.uge" — the ampersand exposes the digit as a Lazarus menu
+    // mnemonic (Alt+1..9), which the numeric prefix reads as anyway.
+    if I < 9 then
+      Item.Caption := '&'+IntToStr(I+1)+' '+ExtractFileName(DisplayPath)
+    else
+      Item.Caption := IntToStr(I+1)+' '+ExtractFileName(DisplayPath);
+    Item.Hint := DisplayPath;
+    Item.OnClick := @OpenRecentFileClick;
+    RecentFilesMenuItem.Add(Item);
+  end;
+
+  Separator := TMenuItem.Create(RecentFilesMenuItem);
+  Separator.Caption := '-';
+  RecentFilesMenuItem.Add(Separator);
+
+  ClearItem := TMenuItem.Create(RecentFilesMenuItem);
+  ClearItem.Caption := 'Clear Recent Files';
+  ClearItem.OnClick := @ClearRecentFilesClick;
+  RecentFilesMenuItem.Add(ClearItem);
+end;
+
+procedure TfrmTracker.OpenRecentFileClick(Sender: TObject);
+var
+  Path: String;
+begin
+  Path := (Sender as TMenuItem).Hint;
+  if Trim(Path) = '' then Exit;
+
+  if not FileExists(Path) then begin
+    ShowMessage('File no longer exists: '+Path);
+    TrackerSettings.RemoveRecentFile(Path);
+    RebuildRecentFilesMenu;
+    Exit;
+  end;
+
+  if not CheckUnsavedChanges then Exit;
+
+  LoadSong(Path);
+end;
+
+procedure TfrmTracker.ClearRecentFilesClick(Sender: TObject);
+begin
+  TrackerSettings.ClearRecentFiles;
+  RebuildRecentFilesMenu;
 end;
 
 procedure TfrmTracker.DrawWaveform(PB: TPaintBox; Wave: TWave; DrawGrid: Boolean);
@@ -1047,17 +1147,27 @@ begin
 end;
 
 procedure TfrmTracker.LoadWave(Wave: Integer);
+var
+  WasLoading: Boolean;
 begin
-  CurrentWave := @Song.Waves[Wave];
-  WaveEditPaintBox.Invalidate;
-  UpdateHexWaveTextbox;
+  WasLoading := LoadingFile;
+  LoadingFile := True;
+  try
+    CurrentWave := @Song.Waves[Wave];
+    WaveEditPaintBox.Invalidate;
+    UpdateHexWaveTextbox;
+  finally
+    LoadingFile := WasLoading;
+  end;
 end;
 
 procedure TfrmTracker.LoadSong(Filename: String);
 var
   Stream: TStream;
   TempSong: TSong;
+  LoadOk: Boolean;
 begin
+  LoadOk := False;
   Stream := TFileStream.Create(FileName, fmOpenRead);
   try
     ReadSongFromStream(stream, TempSong);
@@ -1065,11 +1175,17 @@ begin
     Song := TempSong;
     FileSaveAs1.Dialog.FileName := FileName;
     UpdateUIAfterLoad(Filename);
+    LoadOk := True;
   except
     on E: ESongVersionException do
       ShowMessage('This song was created with a newer version of hUGETracker, and cannot be loaded.');
   end;
   Stream.Free;
+
+  if LoadOk then begin
+    TrackerSettings.PushRecentFile(Filename);
+    RebuildRecentFilesMenu;
+  end;
 end;
 
 procedure TfrmTracker.ReloadPatterns;
@@ -1290,6 +1406,7 @@ begin
   TrackerGrid.OnResize:=@OnTrackerGridResize;
   TrackerGrid.OnCursorOutOfBounds:=@OnTrackerGridCursorOutOfBounds;
   TrackerGrid.OnDoubleClickedInstrument:=@OnTrackerGridDoubleClickedInstrument;
+  TrackerGrid.OnDirty:=@OnTrackerGridDirty;
   TrackerGrid.FontSize := TrackerSettings.PatternEditorFontSize;
   TrackerGrid.Left := RowNumberStringGrid.Left + RowNumberStringGrid.Width;
   TrackerGrid.PopupMenu := TrackerGridPopup;
@@ -1299,6 +1416,7 @@ begin
   // Recreate TableGrid
   if Assigned(TableGrid) then TableGrid.Free;
   TableGrid := TTableGrid.Create(Self, ScrollBox2, SubpatternMap, 1, 32);
+  TableGrid.OnDirty:=@OnTrackerGridDirty;
 
   TableGrid.FontSize := TrackerSettings.PatternEditorFontSize;
   TableGrid.Left := RowNumberStringGrid1.Left - TableGrid.Width;
@@ -1336,7 +1454,11 @@ end;
 procedure TfrmTracker.LoadInstrument(Bank: TInstrumentType; Instr: Integer);
 var
   CI: ^TInstrument;
+  WasLoading: Boolean;
 begin
+  WasLoading := LoadingFile;
+  LoadingFile := True;
+  try
   CurrentInstrumentBank := Bank;
   case Bank of
     itSquare: CurrentInstrument := @Song.Instruments.Duty[Instr];
@@ -1399,6 +1521,9 @@ begin
 
   WavePaintbox.Invalidate;
   EnvelopePaintBox.Invalidate;
+  finally
+    LoadingFile := WasLoading;
+  end;
 end;
 
 procedure TfrmTracker.ChangeToSquare;
@@ -1451,6 +1576,7 @@ end;
 procedure TfrmTracker.WaveVolumeComboboxChange(Sender: TObject);
 begin
   CurrentInstrument^.OutputLevel := WaveVolumeCombobox.ItemIndex;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.CustomExceptionHandler(Sender: TObject; E: Exception);
@@ -1488,18 +1614,21 @@ begin
     CurrentInstrument^.CounterStep := swSeven
   else
     CurrentInstrument^.CounterStep := swFifteen;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.SongEditChange(Sender: TObject);
 begin
   Song.Name := SongEdit.Text;
   UpdateWindowTitle;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.StartVolSpinnerChange(Sender: TObject);
 begin
   CurrentInstrument^.InitialVolume := Round(StartVolTrackbar.Position);
   EnvelopePaintBox.Invalidate;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.SweepDirectionComboboxChange(Sender: TObject);
@@ -1509,22 +1638,26 @@ begin
     'Down': CurrentInstrument^.SweepIncDec := stDown;
   end;
   EnvelopePaintBox.Invalidate;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.SweepSizeSpinnerChange(Sender: TObject);
 begin
   CurrentInstrument^.SweepShift := Round(SweepSizeTrackbar.Position);
+  MarkDirty;
 end;
 
 procedure TfrmTracker.SweepTimeComboboxChange(Sender: TObject);
 begin
   CurrentInstrument^.SweepTime := SweepTimeCombobox.ItemIndex;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.WaveformComboboxChange(Sender: TObject);
 begin
   CurrentInstrument^.Waveform:=WaveformCombobox.ItemIndex;
   WavePaintbox.Invalidate;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.InstrumentTypeComboboxChange(Sender: TObject);
@@ -1646,6 +1779,11 @@ begin
   else
     SampleSongsMenuItem.Enabled := False;
 
+  // Populate the Recent Files submenu before any load, so that if a command
+  // line arg comes in and LoadSong pushes to recents + rebuilds, the menu
+  // already exists in a valid state.
+  RebuildRecentFilesMenu;
+
   // If a command line param was passed, try to open it
   if FileExists(ParamStr(1)) and (ExtractFileExt(ParamStr(1)) = '.uge') then
     LoadSong(ParamStr(1))
@@ -1732,6 +1870,7 @@ begin
     Read(F, Song.Waves[WaveEditNumberSpinner.Value]);
     CloseFile(F);
     WaveEditPaintBox.Invalidate;
+    MarkDirty;
   end;
 end;
 
@@ -1777,6 +1916,7 @@ begin
 
       // Refresh the UI
       LoadInstrument(CurrentInstrumentBank, InstrumentNumberSpinner.Value);
+      MarkDirty;
     end;
   end;
 end;
@@ -1788,17 +1928,20 @@ begin
     'Down': CurrentInstrument^.VolSweepDirection := stDown;
   end;
   EnvelopePaintBox.Invalidate;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.CommentMemoChange(Sender: TObject);
 begin
   Song.Comment := CommentMemo.Text;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.ArtistEditChange(Sender: TObject);
 begin
   Song.Artist := ArtistEdit.Text;
   UpdateWindowTitle;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.HelpLookupManualExecute(Sender: TObject);
@@ -1826,6 +1969,10 @@ begin
     LoadedFileName := FileSaveAs1.Dialog.FileName;
     UpdateWindowTitle;
     RevertMenuItem.Enabled := (LoadedFileName <> '');
+    Dirty := False;
+
+    TrackerSettings.PushRecentFile(LoadedFileName);
+    RebuildRecentFilesMenu;
   finally
     stream.Free;
   end;
@@ -1991,6 +2138,7 @@ begin
       CurrentWave^[I] := Hex2Dec(S.Substring(I,1));
     HexWaveEdit.Text := S;
     WaveEditPaintBox.Invalidate;
+    MarkDirty;
   except
     on EConvertError do Exit;
   end;
@@ -2164,6 +2312,7 @@ end;
 procedure TfrmTracker.TimerDividerSpinEditChange(Sender: TObject);
 begin
   Song.TimerDivider := TimerDividerSpinEdit.Value;
+  MarkDirty;
   UpdateBPMLabel
 end;
 
@@ -2270,6 +2419,7 @@ begin
       if Inst^.Type_ = CurrentInstrument^.Type_ then begin
         CurrentInstrument^ := Inst^;
         LoadInstrument(CurrentInstrumentBank, InstrumentNumberSpinner.Value);
+        MarkDirty;
       end;
     end;
   finally
@@ -2291,12 +2441,15 @@ begin
   end;
     CopyOrderMatrixToOrderGrid;
   ReloadPatterns;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.OrderEditStringGridEditingDone(Sender: TObject);
 begin
-  if OrderEditStringGrid.Row > -1 then
+  if OrderEditStringGrid.Row > -1 then begin
     ReloadPatterns;
+    MarkDirty;
+  end;
 
   if (not InFDCallback) and Playing then begin // Hacky solution, but probably the best there is.
     LockPlayback;
@@ -2357,7 +2510,8 @@ begin
   TimerTempoLabel.Enabled := TimerEnabledCheckBox.Checked;
   TimerDividerSpinEdit.Enabled := TimerEnabledCheckBox.Checked;
 
-  UpdateBPMLabel
+  UpdateBPMLabel;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.LoopSongToolButtonClick(Sender: TObject);
@@ -2380,6 +2534,7 @@ end;
 procedure TfrmTracker.EnableSubpatternCheckboxChange(Sender: TObject);
 begin
   CurrentInstrument^.SubpatternEnabled := EnableSubpatternCheckbox.Checked;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.DebugButtonClick(Sender: TObject);
@@ -2392,6 +2547,7 @@ begin
     Song.OrderMatrix[0][I] := Song.OrderMatrix[0][I] xor Song.OrderMatrix[1][I];
   end;
   ReloadPatterns;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.DecreaseOctaveActionExecute(Sender: TObject);
@@ -2465,13 +2621,22 @@ begin
 end;
 
 procedure TfrmTracker.RoutineNumberSpinnerChange(Sender: TObject);
+var
+  WasLoading: Boolean;
 begin
-  RoutineSynedit.Text := Song.Routines[RoutineNumberSpinner.Value];
+  WasLoading := LoadingFile;
+  LoadingFile := True;
+  try
+    RoutineSynedit.Text := Song.Routines[RoutineNumberSpinner.Value];
+  finally
+    LoadingFile := WasLoading;
+  end;
 end;
 
 procedure TfrmTracker.RoutineSyneditChange(Sender: TObject);
 begin
   Song.Routines[RoutineNumberSpinner.Value] := RoutineSynedit.Text;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.PlayStartActionExecute(Sender: TObject);
@@ -2496,12 +2661,14 @@ end;
 procedure TfrmTracker.DutyComboboxChange(Sender: TObject);
 begin
   CurrentInstrument^.Duty := DutyComboBox.ItemIndex;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.EnvChangeSpinnerChange(Sender: TObject);
 begin
   CurrentInstrument^.VolSweepAmount := Round(EnvChangeTrackbar.Position);
   EnvelopePaintBox.Invalidate;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.EnvelopePaintboxPaint(Sender: TObject);
@@ -2537,6 +2704,7 @@ begin
       NoiseInstrumentsNode.Items[InstrumentNumberSpinner.Value-1].Text := S;
     end;
   end;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.InstrumentNumberSpinnerChange(Sender: TObject);
@@ -2548,6 +2716,7 @@ procedure TfrmTracker.LengthSpinnerChange(Sender: TObject);
 begin
   CurrentInstrument^.Length := Round(LengthTrackbar.Position);
   EnvelopePaintBox.Invalidate;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.MenuItem11Click(Sender: TObject);
@@ -2589,6 +2758,7 @@ begin
   OrderEditStringGrid.Row := OrderEditStringGrid.Row+1;
 
   ReloadPatterns;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.MenuItem18Click(Sender: TObject);
@@ -2599,12 +2769,15 @@ begin
   OrderEditStringGrid.Row := OrderEditStringGrid.Row+1;
 
   ReloadPatterns;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.MenuItem19Click(Sender: TObject);
 begin
-  if OrderEditStringGrid.RowCount > 2 then
+  if OrderEditStringGrid.RowCount > 2 then begin
     OrderEditStringGrid.DeleteRow(OrderEditStringGrid.Row);
+    MarkDirty;
+  end;
 
   ReloadPatterns;
 end;
@@ -2617,6 +2790,7 @@ begin
   end;
 
   ReloadPatterns;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.MenuItem22Click(Sender: TObject);
@@ -2643,6 +2817,7 @@ begin
   end;
 
   ReloadPatterns;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.OptionsMenuItemClick(Sender: TObject);
@@ -2803,6 +2978,7 @@ begin
     Cells[Col, Row] := IntToStr(Highest);
     TrackerGrid.LoadPattern(Col - 1, Highest);
   end;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.OrderEditStringGridKeyDown(Sender: TObject;
@@ -2812,6 +2988,7 @@ begin
     // TODO: Make this stop the editor from showing
     OrderEditStringGrid.DeleteRow(OrderEditStringGrid.Row);
     ReloadPatterns;
+    MarkDirty;
   end;
 end;
 
@@ -2823,25 +3000,29 @@ end;
 procedure TfrmTracker.TicksPerRowSpinEditChange(Sender: TObject);
 begin
   Song.TicksPerRow[0] := TicksPerRowSpinEdit.Value;
-  UpdateBPMLabel
+  UpdateBPMLabel;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.TicksPerRowSpinEdit1Change(Sender: TObject);
 begin
   Song.TicksPerRow[1] := TicksPerRowSpinEdit1.Value;
-  UpdateBPMLabel
+  UpdateBPMLabel;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.TicksPerRowSpinEdit2Change(Sender: TObject);
 begin
   Song.TicksPerRow[2] := TicksPerRowSpinEdit2.Value;
-  UpdateBPMLabel
+  UpdateBPMLabel;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.TicksPerRowSpinEdit3Change(Sender: TObject);
 begin
   Song.TicksPerRow[3] := TicksPerRowSpinEdit3.Value;
-  UpdateBPMLabel
+  UpdateBPMLabel;
+  MarkDirty;
 end;
 
 procedure TfrmTracker.OscilloscopeUpdateTimerTimer(Sender: TObject);
@@ -3092,6 +3273,7 @@ begin
     WaveEditPaintBox.Invalidate;
     if PlayWaveWhileDrawingCheckbox.Checked then
       CopyWaveIntoWaveRam(WaveEditNumberSpinner.Value);
+    MarkDirty;
   end;
 end;
 
@@ -3112,6 +3294,7 @@ begin
   LengthTrackbar.Enabled := LengthEnabledCheckbox.Checked;
   CurrentInstrument^.LengthEnabled := LengthEnabledCheckbox.Checked;
   EnvelopePaintBox.Invalidate;
+  MarkDirty;
 end;
 
 end.

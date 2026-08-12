@@ -7,6 +7,10 @@ interface
 uses
   Classes, SysUtils, INIFiles, Constants, Forms, Dialogs;
 
+const
+  MAX_RECENT_FILES = 10;
+  RECENT_FILES_SECTION = 'RecentFiles';
+
 type
 
   { TTrackerSettings }
@@ -27,6 +31,8 @@ type
     FMIDIInputEnabled: Boolean;
     FMIDIInputDevice: String;
 
+    FRecentFiles: TStringList;
+
     procedure SetDisplayOrderRowNumbersAsHex(AValue: Boolean);
     procedure SetDisplayRowNumbersAsHex(AValue: Boolean);
     procedure SetDrawWaveformGrid(AValue: Boolean);
@@ -38,6 +44,8 @@ type
     procedure SetUseScopes(AValue: Boolean);
     procedure SetMIDIInputEnabled(AValue: Boolean);
     procedure SetMIDIInputDevice(const AValue: String);
+
+    procedure WriteRecentFilesToIni;
   public
     property PatternEditorFontSize: Integer read FPatternEditorFontSize write SetPatternEditorFontSize;
     property UseScopes: Boolean read FUseScopes write SetUseScopes;
@@ -51,7 +59,13 @@ type
     property MIDIInputEnabled: Boolean read FMIDIInputEnabled write SetMIDIInputEnabled;
     property MIDIInputDevice: String read FMIDIInputDevice write SetMIDIInputDevice;
 
+    property RecentFiles: TStringList read FRecentFiles;
+    procedure PushRecentFile(const Path: String);
+    procedure RemoveRecentFile(const Path: String);
+    procedure ClearRecentFiles;
+
     constructor Create;
+    destructor Destroy; override;
   end;
 
 procedure InitializeTrackerSettings;
@@ -191,7 +205,64 @@ begin
   SettingsFile.WriteString('hUGETracker', 'MIDIInputDevice', AValue);
 end;
 
+procedure TTrackerSettings.WriteRecentFilesToIni;
+var
+  I: Integer;
+begin
+  // Rewrite the whole section so removed / reordered entries don't leak.
+  SettingsFile.EraseSection(RECENT_FILES_SECTION);
+  for I := 0 to FRecentFiles.Count-1 do
+    SettingsFile.WriteString(
+      RECENT_FILES_SECTION,
+      'Recent'+IntToStr(I+1),
+      FRecentFiles[I]);
+end;
+
+procedure TTrackerSettings.PushRecentFile(const Path: String);
+var
+  Normalized: String;
+  ExistingIdx: Integer;
+begin
+  if Trim(Path) = '' then Exit;
+
+  Normalized := ExpandFileName(Path);
+
+  ExistingIdx := FRecentFiles.IndexOf(Normalized);
+  if ExistingIdx = 0 then Exit; // Already at top — nothing to do
+  if ExistingIdx > 0 then
+    FRecentFiles.Delete(ExistingIdx);
+
+  FRecentFiles.Insert(0, Normalized);
+
+  while FRecentFiles.Count > MAX_RECENT_FILES do
+    FRecentFiles.Delete(FRecentFiles.Count-1);
+
+  WriteRecentFilesToIni;
+end;
+
+procedure TTrackerSettings.RemoveRecentFile(const Path: String);
+var
+  Normalized: String;
+  Idx: Integer;
+begin
+  if Trim(Path) = '' then Exit;
+  Normalized := ExpandFileName(Path);
+  Idx := FRecentFiles.IndexOf(Normalized);
+  if Idx < 0 then Exit;
+  FRecentFiles.Delete(Idx);
+  WriteRecentFilesToIni;
+end;
+
+procedure TTrackerSettings.ClearRecentFiles;
+begin
+  FRecentFiles.Clear;
+  SettingsFile.EraseSection(RECENT_FILES_SECTION);
+end;
+
 constructor TTrackerSettings.Create;
+var
+  I: Integer;
+  Path: String;
 begin
   SettingsFile := TINIFile.Create(ConcatPaths([ConfDir, 'options.ini']));
 
@@ -206,6 +277,25 @@ begin
   FVerticalTabs := SettingsFile.ReadBool('hUGETracker', 'VerticalTabs', False);
   FMIDIInputEnabled := SettingsFile.ReadBool('hUGETracker', 'MIDIInputEnabled', False);
   FMIDIInputDevice := SettingsFile.ReadString('hUGETracker', 'MIDIInputDevice', '');
+
+  FRecentFiles := TStringList.Create;
+  for I := 1 to MAX_RECENT_FILES do begin
+    Path := SettingsFile.ReadString(RECENT_FILES_SECTION, 'Recent'+IntToStr(I), '');
+    if Trim(Path) = '' then Continue;
+
+    Path := ExpandFileName(Path);
+    // Defensive dedupe on load — the file may have been edited by hand,
+    // or an older build may have written the same path twice.
+    if FRecentFiles.IndexOf(Path) < 0 then
+      FRecentFiles.Add(Path);
+  end;
+end;
+
+destructor TTrackerSettings.Destroy;
+begin
+  FRecentFiles.Free;
+  SettingsFile.Free;
+  inherited Destroy;
 end;
 
 finalization

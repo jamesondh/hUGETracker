@@ -2112,6 +2112,9 @@ object frmTracker: TfrmTracker
         Enabled = False
         OnClick = RevertMenuItemClick
       end
+      object RecentFilesMenuItem: TMenuItem
+        Caption = 'Recent Files'
+      end
       object MenuItem4: TMenuItem
         Caption = '-'
       end

@@ -127,6 +127,7 @@ type
 
     OnCursorOutOfBounds: procedure of object;
     OnDoubleClickedInstrument: procedure of object;
+    OnDirty: TNotifyEvent;
 
     property HighlightedRow: Integer read FHighlightedRow write SetHighlightedRow;
     property SelectionGridRect: TRect read GetSelectionGridRect write SetSelectionGridRect;
@@ -812,6 +813,8 @@ begin
     // Keep the stack size, at maximum, UNDO_STACK_SIZE
     while Performed.Size > UNDO_STACK_SIZE do
       Performed.PopBack;
+
+    if Assigned(OnDirty) then OnDirty(Self);
   end;
 
   Dec(NestedUndoCount);
@@ -841,6 +844,8 @@ begin
   end;
 
   Invalidate;
+
+  if Assigned(OnDirty) then OnDirty(Self);
 end;
 
 procedure TTrackerGrid.DoRedo;
@@ -861,6 +866,8 @@ begin
   end;
 
   Invalidate;
+
+  if Assigned(OnDirty) then OnDirty(Self);
 end;
 
 procedure TTrackerGrid.RenderSelectedArea;
